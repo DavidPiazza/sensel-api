@@ -278,3 +278,9 @@ sysinfo.txt
 
 
 build/
+
+# morph-cataret build output
+apps/morph-cataret/build/
+
+# macOS
+.DS_Store
