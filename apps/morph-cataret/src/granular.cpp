@@ -3,12 +3,12 @@
 #include <cmath>
 #include <algorithm>
 
-static constexpr int   MAX_VOICES   = 256;
+static constexpr int   MAX_VOICES   = 1024;
 static constexpr float GRAIN_MS      = 75.f;   // playback grain length
 static constexpr int   WINDOW_LUT_N  = 4096;
 
 Engine::Engine(const Corpus* corpus, int sampleRate)
-    : corpus_(corpus), sampleRate_(sampleRate), queue_(1024)
+    : corpus_(corpus), sampleRate_(sampleRate), queue_(4096)
 {
     playDur_ = (uint32_t)(GRAIN_MS * 0.001f * sampleRate_);
     pool_.resize(MAX_VOICES);
@@ -31,20 +31,34 @@ static inline float cubic(const float* x, uint32_t len, double pos) {
 void Engine::spawn(const GrainTrigger& t) {
     auto seg = corpus_->grainSource(t.grain);   // {ptr, len} into resident audio
     if (!seg.first || seg.second < 4) return;
-    for (Voice& v : pool_) {
-        if (v.active) continue;
-        v.src = seg.first;
-        v.len = std::min<uint32_t>(seg.second, playDur_);
-        v.pos = 0.0;
-        v.rate = t.rate;
-        v.gain = t.gain;
-        v.pan  = t.pan;
-        v.age = 0;
-        v.dur = v.len;
-        v.active = true;
-        return;
+
+    const int n = (int)pool_.size();
+    int chosen = -1;
+    // round-robin search for a free voice (cheap, avoids always-from-0 clustering)
+    for (int s = 0; s < n; ++s) {
+        int i = cursor_ + s; if (i >= n) i -= n;
+        if (!pool_[i].active) { chosen = i; cursor_ = (i + 1 < n) ? i + 1 : 0; break; }
     }
-    // pool exhausted: drop the grain (RT-safe: never block)
+    // pool full: steal the oldest grain. Its Hann envelope is near zero, so the
+    // cut is nearly click-free — graceful degradation instead of a dropout.
+    if (chosen < 0) {
+        uint32_t bestAge = 0;
+        for (int i = 0; i < n; ++i)
+            if (pool_[i].age >= bestAge) { bestAge = pool_[i].age; chosen = i; }
+    }
+
+    Voice& v = pool_[chosen];
+    v.src = seg.first;
+    v.len = std::min<uint32_t>(seg.second, playDur_);
+    v.pos = 0.0;
+    v.rate = t.rate;
+    v.gain = t.gain;
+    v.pan  = t.pan;
+    v.age = 0;
+    v.dur = v.len;
+    v.winPhase = 0.0;
+    v.winInc = (double)WINDOW_LUT_N / (double)v.dur;
+    v.active = true;
 }
 
 void Engine::render(float* out, uint32_t frames) {
@@ -55,13 +69,16 @@ void Engine::render(float* out, uint32_t frames) {
 
     for (Voice& v : pool_) {
         if (!v.active) continue;
+        const float gl = v.gain * (1.f - v.pan);
+        const float gr = v.gain * v.pan;
         for (uint32_t i = 0; i < frames; ++i) {
-            uint32_t wi = (uint32_t)((uint64_t)v.age * WINDOW_LUT_N / v.dur);
-            float env = window_[std::min<uint32_t>(wi, WINDOW_LUT_N - 1)];
-            float s   = env * v.gain * cubic(v.src, v.len, v.pos);
-            out[2*i]     += s * (1.f - v.pan);
-            out[2*i + 1] += s * v.pan;
+            int wi = (int)v.winPhase;
+            float env = window_[wi < WINDOW_LUT_N ? wi : WINDOW_LUT_N - 1];
+            float s   = env * cubic(v.src, v.len, v.pos);
+            out[2*i]     += s * gl;
+            out[2*i + 1] += s * gr;
             v.pos += v.rate;
+            v.winPhase += v.winInc;
             if (++v.age >= v.dur || v.pos >= v.len - 2) { v.active = false; break; }
         }
     }

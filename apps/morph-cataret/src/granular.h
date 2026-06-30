@@ -31,6 +31,7 @@ private:
         uint32_t     len = 0;
         double       pos = 0.0;
         double       rate = 1.0;
+        double       winPhase = 0.0, winInc = 0.0;  // window LUT phase (divide-free)
         float        gain = 0.f, pan = 0.5f;
         uint32_t     age = 0, dur = 0;
         bool         active = false;
@@ -41,6 +42,7 @@ private:
     const Corpus* corpus_;
     int           sampleRate_;
     uint32_t      playDur_;                 // grain length in samples
+    int           cursor_ = 0;              // round-robin allocation hint
     std::vector<Voice>            pool_;
     std::vector<float>            window_;  // Hann LUT
     moodycamel::ReaderWriterQueue<GrainTrigger> queue_;
