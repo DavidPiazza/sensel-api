@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 ##########################################################################
 # MIT License
@@ -28,11 +28,17 @@ import sensel
 import binascii
 import threading
 
+# NOTE: The full force array (FRAME_CONTENT_PRESSURE_MASK) is decompressed by
+# Sensel's closed-source LibSenselDecompress, which ships x86_64-only. On Apple
+# Silicon this example only reports real forces when run under Rosetta against an
+# x86_64 build of LibSensel + LibSenselDecompress. For native arm64, use
+# per-contact force (contact.total_force) as shown in example 2.
+
 enter_pressed = False;
 
 def waitForEnter():
     global enter_pressed
-    raw_input("Press Enter to exit...")
+    input("Press Enter to exit...")
     enter_pressed = True
     return
 
@@ -60,7 +66,7 @@ def printFrame(frame, info):
     total_force = 0.0
     for n in range(info.num_rows*info.num_cols):
         total_force += frame.force_array[n]
-    print "Total Force: "+str(total_force)
+    print("Total Force: "+str(total_force))
 
 def closeSensel(frame):
     error = sensel.freeFrameData(handle, frame)
@@ -69,7 +75,7 @@ def closeSensel(frame):
 
 if __name__ == "__main__":
     handle = openSensel()
-    if handle != None:
+    if handle is not None:
         (error, info) = sensel.getSensorInfo(handle)
         frame = initFrame()
         

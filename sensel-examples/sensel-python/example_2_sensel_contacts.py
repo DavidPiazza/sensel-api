@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 ##########################################################################
 # MIT License
@@ -32,7 +32,7 @@ enter_pressed = False;
 
 def waitForEnter():
     global enter_pressed
-    raw_input("Press Enter to exit...")
+    input("Press Enter to exit...")
     enter_pressed = True
     return
 
@@ -58,10 +58,10 @@ def scanFrames(frame, info):
 
 def printFrame(frame, info):
     if frame.n_contacts > 0:
-        print "\nNum Contacts: ", frame.n_contacts
+        print("\nNum Contacts: ", frame.n_contacts)
         for n in range(frame.n_contacts):
             c = frame.contacts[n]
-            print "Contact ID: ", c.id
+            print("Contact ID: ", c.id)
             if c.state == sensel.CONTACT_START:
                 sensel.setLEDBrightness(handle, c.id, 100)
             elif c.state == sensel.CONTACT_END:
@@ -73,9 +73,8 @@ def closeSensel(frame):
     error = sensel.close(handle)
 
 if __name__ == "__main__":
-    global enter_pressed
     handle = openSensel()
-    if handle != None:
+    if handle is not None:
         (error, info) = sensel.getSensorInfo(handle)
         frame = initFrame()
 
