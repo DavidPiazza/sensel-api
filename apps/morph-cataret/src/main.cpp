@@ -17,6 +17,7 @@
 #include <cmath>
 #include <csignal>
 #include <cstdio>
+#include <random>
 #include <thread>
 #include <unordered_map>
 #include <vector>
@@ -71,6 +72,8 @@ int main(int argc, char** argv) {
     std::vector<Contact> contacts;
     std::unordered_map<int, std::chrono::steady_clock::time_point> lastEmit;
     std::vector<float> ledTarget(nLeds, 0.f);
+    std::mt19937 rng(0xC0FFEE);
+    std::uniform_real_distribution<float> uni(0.f, 1.f);
 
     while (g_running) {
         morph.poll(contacts);
@@ -83,20 +86,32 @@ int main(int argc, char** argv) {
             qx = std::min(1.f, std::max(0.f, qx));
             qy = std::min(1.f, std::max(0.f, qy));
 
-            float gain = std::min(1.f, c.force / 1500.f);          // grams -> gain
+            float f    = std::min(1.f, c.force / 1500.f);
+            float gain = f;                                        // grams -> gain
             int   k    = std::min(8, std::max(1, 1 + (int)(c.area / 20.f)));
             float rate = std::pow(2.f, ((c.orientation - 90.f) / 90.f) * (5.f / 12.f));
 
-            // density: higher force -> grains fire more often
-            auto interval = std::chrono::milliseconds(
-                (int)(60.f - 52.f * std::min(1.f, c.force / 1500.f)));   // 60ms..8ms
+            // Asynchronous scheduling: jitter the inter-onset interval so the
+            // grain train is aperiodic (no pitched tone at high density), and
+            // give each grain a sample-accurate random pre-roll so onsets don't
+            // quantize to the poll/buffer grid.
+            float baseMs = 60.f - 52.f * f;                        // 60ms..8ms
+            uint32_t intervalSamp = (uint32_t)(baseMs * 0.001f * SAMPLE_RATE);
+            float jittered = baseMs * (1.f + 0.6f * (uni(rng) * 2.f - 1.f));  // +/-60%
+            auto interval = std::chrono::milliseconds((int)std::max(2.f, jittered));
+
             auto& t = lastEmit[c.id];
             if (t.time_since_epoch().count() == 0 || now - t >= interval) {
                 t = now;
                 uint32_t idx[8];
                 int found = corpus.knn(qx, qy, k, idx);
-                for (int i = 0; i < found; ++i)
-                    engine.push(GrainTrigger{ idx[i], gain / std::sqrt((float)found), rate, qx });
+                for (int i = 0; i < found; ++i) {
+                    uint32_t delay = (uint32_t)(uni(rng) * intervalSamp);        // spread across the gap
+                    uint32_t roff  = (uint32_t)(uni(rng) * 1500.f);              // ~31ms position spray
+                    float    pan   = std::min(1.f, std::max(0.f, qx + (uni(rng) - 0.5f) * 0.2f));
+                    engine.push(GrainTrigger{ idx[i], gain / std::sqrt((float)found),
+                                              rate, pan, delay, roff });
+                }
             }
 
             int led = (int)std::lround(qx * (nLeds - 1));

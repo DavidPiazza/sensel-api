@@ -47,15 +47,20 @@ void Engine::spawn(const GrainTrigger& t) {
             if (pool_[i].age >= bestAge) { bestAge = pool_[i].age; chosen = i; }
     }
 
+    // position spray: read from a randomized offset into the source grain
+    uint32_t avail = seg.second;
+    uint32_t ro = (avail > playDur_) ? std::min(t.readOffset, avail - playDur_) : 0;
+
     Voice& v = pool_[chosen];
-    v.src = seg.first;
-    v.len = std::min<uint32_t>(seg.second, playDur_);
+    v.src = seg.first + ro;
+    v.len = std::min<uint32_t>(avail - ro, playDur_);
     v.pos = 0.0;
     v.rate = t.rate;
     v.gain = t.gain;
     v.pan  = t.pan;
     v.age = 0;
     v.dur = v.len;
+    v.delay = t.delay;
     v.winPhase = 0.0;
     v.winInc = (double)WINDOW_LUT_N / (double)v.dur;
     v.active = true;
@@ -71,7 +76,14 @@ void Engine::render(float* out, uint32_t frames) {
         if (!v.active) continue;
         const float gl = v.gain * (1.f - v.pan);
         const float gr = v.gain * v.pan;
-        for (uint32_t i = 0; i < frames; ++i) {
+        uint32_t i = 0;
+        // consume the silent pre-roll (may span the whole buffer)
+        if (v.delay > 0) {
+            uint32_t d = std::min<uint32_t>(v.delay, frames);
+            v.delay -= d; i = d;
+            if (v.delay > 0) continue;
+        }
+        for (; i < frames; ++i) {
             int wi = (int)v.winPhase;
             float env = window_[wi < WINDOW_LUT_N ? wi : WINDOW_LUT_N - 1];
             float s   = env * cubic(v.src, v.len, v.pos);

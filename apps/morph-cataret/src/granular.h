@@ -9,10 +9,12 @@
 class Corpus;
 
 struct GrainTrigger {
-    uint32_t grain;   // index into Corpus grain table
-    float    gain;    // 0..1   (from contact force)
-    float    rate;    // playback speed / transpose (from orientation)
-    float    pan;     // 0..1   (from x)
+    uint32_t grain;       // index into Corpus grain table
+    float    gain;        // 0..1   (from contact force)
+    float    rate;        // playback speed / transpose (from orientation)
+    float    pan;         // 0..1   (from x, + spray)
+    uint32_t delay;       // sample-accurate onset pre-roll (async scheduling)
+    uint32_t readOffset;  // samples into the source grain (position spray)
 };
 
 class Engine {
@@ -34,6 +36,7 @@ private:
         double       winPhase = 0.0, winInc = 0.0;  // window LUT phase (divide-free)
         float        gain = 0.f, pan = 0.5f;
         uint32_t     age = 0, dur = 0;
+        uint32_t     delay = 0;                      // silent pre-roll (samples)
         bool         active = false;
     };
 
