@@ -2,6 +2,7 @@
 // control thread only ever calls push() (lock-free). No allocation, locking,
 // or I/O happens on the audio thread.
 #pragma once
+#include <atomic>
 #include <vector>
 #include <cstdint>
 #include <readerwriterqueue.h>
@@ -15,6 +16,7 @@ struct GrainTrigger {
     float    pan;         // 0..1   (from x, + spray)
     uint32_t delay;       // sample-accurate onset pre-roll (async scheduling)
     uint32_t readOffset;  // samples into the source grain (position spray)
+    uint32_t durSamples;  // per-grain length — randomized to decorrelate deaths
 };
 
 class Engine {
@@ -26,6 +28,11 @@ public:
 
     // Called from the CoreAudio real-time callback. Interleaved stereo.
     void render(float* out, uint32_t frames);
+
+    // Diagnostics (read from the control thread). active = voices sounding last
+    // block; takeSteals = steals since the previous call (resets the counter).
+    uint32_t activeVoices() const { return active_.load(std::memory_order_relaxed); }
+    uint32_t takeSteals()         { return steals_.exchange(0, std::memory_order_relaxed); }
 
 private:
     struct Voice {
@@ -49,4 +56,6 @@ private:
     std::vector<Voice>            pool_;
     std::vector<float>            window_;  // Hann LUT
     moodycamel::ReaderWriterQueue<GrainTrigger> queue_;
+    std::atomic<uint32_t>         active_{0};   // voices sounding last block
+    std::atomic<uint32_t>         steals_{0};   // steals since last takeSteals()
 };

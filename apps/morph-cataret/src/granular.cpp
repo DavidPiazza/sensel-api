@@ -45,15 +45,19 @@ void Engine::spawn(const GrainTrigger& t) {
         uint32_t bestAge = 0;
         for (int i = 0; i < n; ++i)
             if (pool_[i].age >= bestAge) { bestAge = pool_[i].age; chosen = i; }
+        steals_.fetch_add(1, std::memory_order_relaxed);
     }
 
+    // per-grain length (randomized on the control thread) so cohorts don't all
+    // die together; fall back to the default if unset.
+    uint32_t pd = t.durSamples ? t.durSamples : playDur_;
     // position spray: read from a randomized offset into the source grain
     uint32_t avail = seg.second;
-    uint32_t ro = (avail > playDur_) ? std::min(t.readOffset, avail - playDur_) : 0;
+    uint32_t ro = (avail > pd) ? std::min(t.readOffset, avail - pd) : 0;
 
     Voice& v = pool_[chosen];
     v.src = seg.first + ro;
-    v.len = std::min<uint32_t>(avail - ro, playDur_);
+    v.len = std::min<uint32_t>(avail - ro, pd);
     v.pos = 0.0;
     v.rate = t.rate;
     v.gain = t.gain;
@@ -72,8 +76,10 @@ void Engine::render(float* out, uint32_t frames) {
 
     std::fill(out, out + frames * 2, 0.f);
 
+    uint32_t act = 0;
     for (Voice& v : pool_) {
         if (!v.active) continue;
+        ++act;
         const float gl = v.gain * (1.f - v.pan);
         const float gr = v.gain * v.pan;
         uint32_t i = 0;
@@ -94,6 +100,8 @@ void Engine::render(float* out, uint32_t frames) {
             if (++v.age >= v.dur || v.pos >= v.len - 2) { v.active = false; break; }
         }
     }
+
+    active_.store(act, std::memory_order_relaxed);
 
     // gentle soft clip
     for (uint32_t i = 0; i < frames * 2; ++i)

@@ -17,6 +17,7 @@
 #include <cmath>
 #include <csignal>
 #include <cstdio>
+#include <cstdlib>
 #include <random>
 #include <thread>
 #include <unordered_map>
@@ -75,6 +76,9 @@ int main(int argc, char** argv) {
     std::mt19937 rng(0xC0FFEE);
     std::uniform_real_distribution<float> uni(0.f, 1.f);
 
+    const bool meter = std::getenv("MORPH_METER") != nullptr;   // MORPH_METER=1 to enable
+    auto lastMeter = std::chrono::steady_clock::now();
+
     while (g_running) {
         morph.poll(contacts);
         auto now = std::chrono::steady_clock::now();
@@ -109,8 +113,9 @@ int main(int argc, char** argv) {
                     uint32_t delay = (uint32_t)(uni(rng) * intervalSamp);        // spread across the gap
                     uint32_t roff  = (uint32_t)(uni(rng) * 1500.f);              // ~31ms position spray
                     float    pan   = std::min(1.f, std::max(0.f, qx + (uni(rng) - 0.5f) * 0.2f));
+                    uint32_t durS  = (uint32_t)((50.f + uni(rng) * 60.f) * 0.001f * SAMPLE_RATE);  // 50..110ms
                     engine.push(GrainTrigger{ idx[i], gain / std::sqrt((float)found),
-                                              rate, pan, delay, roff });
+                                              rate, pan, delay, roff, durS });
                 }
             }
 
@@ -119,6 +124,12 @@ int main(int argc, char** argv) {
         }
 
         for (int i = 0; i < nLeds; ++i) morph.setLed(i, ledTarget[i]);
+
+        if (meter && now - lastMeter >= std::chrono::seconds(1)) {
+            std::fprintf(stderr, "[meter] %4u voices  %5u steals/s  %2zu contacts\n",
+                         engine.activeVoices(), engine.takeSteals(), contacts.size());
+            lastMeter = now;
+        }
 
         // poll() blocks ~one frame period (up to ~4ms at 250Hz), so this paces itself.
         std::this_thread::yield();
