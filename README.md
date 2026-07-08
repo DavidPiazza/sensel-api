@@ -13,9 +13,36 @@ optional lightweight C++ wrapper for the Sensel Morph.
 
 ## Apple Silicon Support
 
-The original installers do not include precompiled Apple Silicon libraries.
-This fork can build the core library and C++ Morph wrapper natively from source
-with CMake.
+Sensel never shipped a prebuilt Apple Silicon (arm64) binary, but the core
+library builds natively from source — it's portable MIT-licensed C that talks to
+the Morph over a USB serial port, with no architecture-specific code.
+
+To build a native (or universal arm64 + x86_64) `libSensel.dylib` and install it
+where the wrappers expect it:
+
+```sh
+cd sensel-lib
+./build_mac.sh
+sudo cp build/mac/libSensel.dylib /usr/local/lib/libSensel.dylib   # /usr/local/lib may already be writable
+```
+
+That's all that's needed for full multitouch on Apple Silicon: each contact
+reports position, **total force (in grams)**, area, ellipse, bounding box, and
+peak — see `sensel-examples/sensel-python/example_2_sensel_contacts.py`.
+
+**One caveat — the raw force image.** The full per-element force array
+(`FRAME_CONTENT_PRESSURE_MASK`, used by `example_3`) is decompressed by Sensel's
+closed-source `libSenselDecompress`, which is only distributed as an x86_64
+binary. There is no arm64 build available, so to read the raw force image on
+Apple Silicon you must run your app under Rosetta against x86_64 builds of both
+libraries (`./build_mac.sh pressure`). Per-contact force does **not** need the
+decompress library and works natively.
+
+### Python 3
+
+The Python examples and wrapper run on Python 3. The examples under
+`sensel-examples/sensel-python/` have been ported from Python 2, and the wrapper
+in `sensel-lib-wrappers/sensel-lib-python/sensel.py` works as-is on Python 3.
 
 ## CMake Build
 

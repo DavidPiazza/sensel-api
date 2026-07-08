@@ -117,7 +117,7 @@ class SenselDeviceList(Structure):
 
 def open():
     handle = c_void_p(0)
-    error = sensel_lib.senselOpen(POINTER(handle))
+    error = sensel_lib.senselOpen(byref(handle))
     return (error, handle)
 
 def getDeviceList():
