@@ -2,6 +2,9 @@
 
 The Sensel API allows users to communicate with Sensel devices. 
 
+[CMake](#cmake-build) support in this fork builds the core C library and an
+optional lightweight C++ wrapper for the Sensel Morph.
+
 [Sensel API Primer](http://guide.sensel.com/api/)
 
 [Sensel Lib Documentation](http://guide.sensel.com/sensel_h/)
@@ -10,7 +13,28 @@ The Sensel API allows users to communicate with Sensel devices.
 
 ## Apple Silicon Support
 
-There are currently no libraries compiled for Apple Silicon. 
+The original installers do not include precompiled Apple Silicon libraries.
+This fork can build the core library and C++ Morph wrapper natively from source
+with CMake.
+
+## CMake Build
+
+This fork includes a top-level CMake build for native development on macOS and
+Linux:
+
+```sh
+cmake -S . -B build
+cmake --build build -j
+```
+
+The build exports two targets:
+
+- `sensel` / `sensel::sensel`: the core C API from `sensel-lib/`.
+- `sensel_morph` / `sensel::morph`: a C++17 wrapper for Morph contacts and
+  batched LED writes, enabled by default with `SENSEL_BUILD_CPP_BINDINGS=ON`.
+
+The C++ wrapper's public header is `#include <sensel/morph.h>` and exposes
+`sensel::Morph` and `sensel::Contact`.
 
 ## Getting Started
 
