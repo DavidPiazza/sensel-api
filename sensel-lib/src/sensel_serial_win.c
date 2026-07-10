@@ -192,7 +192,7 @@ static unsigned char ComPortNames(SenselSerialHandle *data)
   return false;
 }
 
-unsigned char senselSerialScan(SenselDeviceList *list)
+int senselSerialScan(SenselDeviceList *list)
 {
   unsigned int        index;
   unsigned int        devtypeidx;
@@ -207,6 +207,8 @@ unsigned char senselSerialScan(SenselDeviceList *list)
   memset(list, 0, sizeof(SenselDeviceList));
   // List all connected USB devices
   hDevInfo = SetupDiGetClassDevs(NULL, TEXT("USB"), NULL, DIGCF_PRESENT | DIGCF_ALLCLASSES);
+  if (hDevInfo == INVALID_HANDLE_VALUE)
+    return -1;
   for (index = 0; ; index++)
   {
     DeviceInfoData.cbSize = sizeof(DeviceInfoData);

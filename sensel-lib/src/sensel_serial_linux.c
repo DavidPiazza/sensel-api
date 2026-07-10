@@ -35,6 +35,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/select.h>
+#include <errno.h>
 
 #define SENSEL_SERIAL_DIR "/dev/"
 
@@ -48,13 +49,21 @@ SenselDeviceList devlist;
 
 unsigned char senselSerialWrite(SenselSerialHandle *data, unsigned char *buf, int buf_len)
 {
-  int wr = write(data->serial_fd, buf, buf_len);
+  int bytes_written = 0;
 
   //THIS CAUSES READ FAILURE IN MAC OSX!!! tcflush(data->serial_fd, TCOFLUSH);
 
-  if(wr == -1)
+  while(bytes_written < buf_len)
   {
-    //perror("Write Error:");
+    int wr = (int)write(data->serial_fd, buf + bytes_written,
+                        (size_t)(buf_len - bytes_written));
+    if(wr > 0)
+    {
+      bytes_written += wr;
+      continue;
+    }
+    if(wr < 0 && errno == EINTR)
+      continue;
     return 0;
   }
   return 1;
@@ -139,14 +148,12 @@ int senselSerialGetAvailable(SenselSerialHandle *data)
 void senselSerialFlushInput(SenselSerialHandle *data)
 {
   int           bytes_read = 0;
-  int           byte_total = 0;
   unsigned char buf[128];
 
   //Read while there are bytes available
   do
   {
     bytes_read = senselSerialReadAvailable(data, buf, 128);
-    byte_total += bytes_read;
   }
   while(bytes_read > 0);
 }
@@ -154,6 +161,10 @@ void senselSerialFlushInput(SenselSerialHandle *data)
 unsigned char senselSerialOpen2(SenselSerialHandle *data, char* file_name)
 {
   char magic[7];
+  struct termios options = {0};
+
+  if(!data || !file_name)
+    return 0;
 
   magic[6] = '\0';
 
@@ -164,8 +175,8 @@ unsigned char senselSerialOpen2(SenselSerialHandle *data, char* file_name)
     return 0;
   }
 
-  struct termios options;
-  tcgetattr(data->serial_fd, &options);
+  if(tcgetattr(data->serial_fd, &options) != 0)
+    goto error;
 
   options.c_iflag &= ~(IGNBRK | BRKINT | PARMRK | ISTRIP
       | INLCR | IGNCR | ICRNL | IXON);
@@ -174,9 +185,10 @@ unsigned char senselSerialOpen2(SenselSerialHandle *data, char* file_name)
   options.c_cflag &= ~(CSIZE | PARENB);
   options.c_cflag |= CS8;
 
-  cfsetispeed(&options, B115200);
-  cfsetospeed(&options, B115200);
-  tcsetattr(data->serial_fd, TCSANOW, &options);
+  if(cfsetispeed(&options, B115200) != 0 ||
+     cfsetospeed(&options, B115200) != 0 ||
+     tcsetattr(data->serial_fd, TCSANOW, &options) != 0)
+    goto error;
 
   //senselSerialFlushInput(data);
 
@@ -188,6 +200,7 @@ unsigned char senselSerialOpen2(SenselSerialHandle *data, char* file_name)
     }
   }
 
+error:
   close(data->serial_fd);
   data->serial_fd = -1;
   return 0;
@@ -197,7 +210,7 @@ unsigned char senselSerialOpen(SenselSerialHandle *data, char* com_port)
 {
   DIR           *d;
   struct dirent *dir;
-  char          file_name[100];
+  char          file_name[512];
   unsigned char found_sensor = 0;
 
   if(com_port != NULL)
@@ -214,15 +227,15 @@ unsigned char senselSerialOpen(SenselSerialHandle *data, char* com_port)
 
   while((dir = readdir(d)) != 0)
   {
-    strcpy(file_name, SENSEL_SERIAL_DIR);
-
     if(strstr(dir->d_name, "morph") ||
        strstr(dir->d_name, "squirt") ||
        strstr(dir->d_name, "ttyACM") ||
        strstr(dir->d_name, "tty.usbmodem") ||
        strstr(dir->d_name, "cu.usbmodem"))
     {
-      strcat(file_name, dir->d_name);
+      if(snprintf(file_name, sizeof(file_name), "%s%s",
+                  SENSEL_SERIAL_DIR, dir->d_name) >= (int)sizeof(file_name))
+        continue;
 
       found_sensor = senselSerialOpen2(data, file_name);
       if(found_sensor)
@@ -274,29 +287,18 @@ unsigned char senselSerialOpenDeviceBySerialNum(SenselSerialHandle *data, char *
 
 unsigned char senselSerialOpenDeviceByComPort(SenselSerialHandle *data, char *com_port)
 {
-  int i;
-
-  if(!devices_scanned)
-  {
-    printf("senselSerialOpenByComPort. Need to call senselGetDeviceList first\n");
+  if(!com_port)
     return 0;
-  }
-
-  for (i = 0; i < devlist.num_devices; i++)
-  {
-    if (!strcmp((char*)com_port, (char*)devlist.devices[i].com_port))
-      return senselSerialOpen2(data, (char*)devlist.devices[i].com_port);
-  }
-  return 0;
+  return senselSerialOpen2(data, com_port);
 }
 
-unsigned char senselSerialScan(SenselDeviceList *list)
+int senselSerialScan(SenselDeviceList *list)
 {
   SenselStatus        status;
   SenselSerialHandle  serial;
   DIR                 *d;
   struct dirent       *dir;
-  char                file_name[128];
+  char                file_name[512];
   unsigned char       found_sensor    = 0;
   unsigned char       num_devices     = 0;
 
@@ -304,15 +306,14 @@ unsigned char senselSerialScan(SenselDeviceList *list)
   if(!d)
   {
     printf("Could not open %s directory.", SENSEL_SERIAL_DIR);
-    return false;
+    return -1;
   }
 
   memset(&devlist, 0, sizeof(SenselDeviceList));
+  serial.serial_fd = -1;
 
   while((dir = readdir(d)) != 0)
   {
-    strcpy(file_name, SENSEL_SERIAL_DIR);
-
     if(strstr(dir->d_name, "morph")  ||
        strstr(dir->d_name, "squirt") ||
        strstr(dir->d_name, "ttyACM") ||
@@ -320,7 +321,9 @@ unsigned char senselSerialScan(SenselDeviceList *list)
        strstr(dir->d_name, "cu.usbmodem"))
     {
       printf("Found device: %s\n", dir->d_name);
-      strcat(file_name, dir->d_name);
+      if(snprintf(file_name, sizeof(file_name), "%s%s",
+                  SENSEL_SERIAL_DIR, dir->d_name) >= (int)sizeof(file_name))
+        continue;
       found_sensor = senselSerialOpen2(&serial, file_name);
       if (found_sensor)
       {
@@ -337,12 +340,14 @@ unsigned char senselSerialScan(SenselDeviceList *list)
 
         // TODO: This is an issue in the firmware code where although the firmware reports a 16 byte long serial, only 13
         //       of them are actually valid. As a consequence, scan through the string and replace 0xFF with 0.
-        for (int i = 0; i < num_chars; i++)
+        if(num_chars >= sizeof(devid->serial_num))
+          num_chars = sizeof(devid->serial_num) - 1;
+        for (unsigned int i = 0; i < num_chars; i++)
           devid->serial_num[i] = (devid->serial_num[i]== 0xFF) ? 0 : devid->serial_num[i];
 
         devid->idx = num_devices;
         devid->serial_num[num_chars] = 0;
-        strncpy((char*)devid->com_port, file_name, sizeof(devid->com_port));
+        snprintf((char*)devid->com_port, sizeof(devid->com_port), "%s", file_name);
         devlist.num_devices = ++num_devices;
       }
       senselSerialClose(&serial);

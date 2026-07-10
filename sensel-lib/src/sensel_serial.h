@@ -35,7 +35,7 @@ unsigned char senselSerialOpen                  (SenselSerialHandle *data, char*
 unsigned char senselSerialOpenDeviceByID        (SenselSerialHandle *data, unsigned char idx);
 unsigned char senselSerialOpenDeviceBySerialNum (SenselSerialHandle *data, char* serial_number);
 unsigned char senselSerialOpenDeviceByComPort   (SenselSerialHandle *data, char* com_port);
-unsigned char senselSerialScan                  (SenselDeviceList *list);
+int           senselSerialScan                  (SenselDeviceList *list);
 unsigned char senselSerialWrite                 (SenselSerialHandle *data, unsigned char* buf, int buf_len);
 int           senselSerialReadAvailable         (SenselSerialHandle *data, unsigned char* buf, int buf_len);
 unsigned char senselSerialReadBytes             (SenselSerialHandle *data, unsigned char* buf, int buf_len);

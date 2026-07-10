@@ -1,48 +1,129 @@
-// Thin C++ wrapper over the Sensel C API: contacts in, LEDs out.
-//
-// LED writes are batched: setLed() only stages values; flushLeds() sends the
-// whole strip in ONE serial round-trip, rate-limited. (The lib's per-LED call
-// transmits the entire array every time and costs ~4.5 ms while scanning —
-// naive per-LED writes collapse a 250 Hz control loop to ~20 Hz.)
 #pragma once
-#include <chrono>
-#include <vector>
+
+#include <cstddef>
 #include <cstdint>
+#include <memory>
+#include <stdexcept>
+#include <string>
+#include <vector>
 
 namespace sensel {
 
-struct Contact {
-    int   id;
-    int   state;        // SenselContactState (1=start, 2=move, 3=end)
-    float x, y;         // mm
-    float force;        // grams
-    float area;         // sensor elements
-    float orientation;  // degrees (ellipse twist, -90..90)
+enum class Operation {
+    None,
+    Open,
+    RecoverPort,
+    GetSensorInfo,
+    GetNumLeds,
+    GetMaxLedBrightness,
+    GetLedRegisterSize,
+    SetContactMask,
+    SetFrameContent,
+    AllocateFrame,
+    StartScanning,
+    ReadSensor,
+    GetFrameCount,
+    GetFrame,
+    FlushLeds
 };
 
-class Morph {
-public:
-    bool  open();                              // self-healing auto-scan + open
-    void  startContacts();                     // enable contact frames + scanning
-    int   poll(std::vector<Contact>& out);     // -1 = no new frame, else # contacts
-    void  setLed(int idx, float v01);          // stage 0..1 brightness (quantized)
-    void  flushLeds();                         // one bulk write, rate-limited (~20 Hz)
-    void  close();
+const char* operationName(Operation operation) noexcept;
 
-    float widthMm()  const { return width_;  }
-    float heightMm() const { return height_; }
-    int   numLeds()  const { return numLeds_; }
+class Error : public std::runtime_error {
+public:
+    Error(Operation operation, int nativeStatus, std::string details = {});
+
+    Operation operation() const noexcept;
+    int nativeStatus() const noexcept;
 
 private:
-    void* handle_ = nullptr;       // SENSEL_HANDLE
-    void* frame_  = nullptr;       // SenselFrameData*
-    float width_ = 0, height_ = 0;
-    int   numLeds_ = 0;
-    uint16_t maxBright_ = 0;
-    int   ledRegSize_ = 1;         // bytes per LED in the device register
-    std::vector<uint8_t> ledArr_;  // staged brightness bytes (device format)
-    bool  ledDirty_ = false;
-    std::chrono::steady_clock::time_point lastLedSend_{};
+    Operation operation_ = Operation::None;
+    int nativeStatus_ = 0;
+};
+
+struct MorphOptions {
+    // Empty uses the Sensel C library's ordinary device discovery.
+    std::string devicePath;
+
+    // Destructive stale-stream recovery is attempted only for an explicit path.
+    bool recoverStaleStream = false;
+};
+
+struct DeviceInfo {
+    float widthMm = 0.0f;
+    float heightMm = 0.0f;
+    std::size_t numLeds = 0;
+};
+
+enum class ContactState {
+    Invalid,
+    Start,
+    Move,
+    End
+};
+
+struct Contact {
+    std::uint8_t id = 0;
+    ContactState state = ContactState::Invalid;
+    float xMm = 0.0f;
+    float yMm = 0.0f;
+    float forceGrams = 0.0f;
+    float areaSensorElements = 0.0f;
+    float orientationDegrees = 0.0f;
+    float majorAxisMm = 0.0f;
+    float minorAxisMm = 0.0f;
+};
+
+struct Frame {
+    int lostFrameCount = 0;
+    std::vector<Contact> contacts;
+};
+
+enum class ReadStatus {
+    FramesAvailable,
+    NoFrames,
+    DeviceError
+};
+
+struct ReadResult {
+    ReadStatus status = ReadStatus::NoFrames;
+    std::size_t frameCount = 0;
+    Operation failedOperation = Operation::None;
+    int nativeStatus = 0;
+};
+
+enum class LedFlushStatus {
+    NoChange,
+    RateLimited,
+    Flushed,
+    DeviceError
+};
+
+// Synchronous RAII owner for one Sensel Morph. Construction opens and fully
+// configures contact scanning or throws Error. readFrames() may block for the
+// C library's serial timeout and must not run on an audio or shared poll thread.
+class Morph {
+public:
+    explicit Morph(MorphOptions options = {});
+    ~Morph() noexcept;
+
+    Morph(const Morph&) = delete;
+    Morph& operator=(const Morph&) = delete;
+    Morph(Morph&&) noexcept;
+    Morph& operator=(Morph&&) noexcept;
+
+    const DeviceInfo& info() const noexcept;
+
+    // Returns every pending frame in order. On a device error, out is empty.
+    ReadResult readFrames(std::vector<Frame>& out);
+
+    // Stages one normalized LED value. No device I/O occurs until flushLeds().
+    void setLed(std::size_t index, float normalizedBrightness);
+    LedFlushStatus flushLeds() noexcept;
+
+private:
+    class Impl;
+    std::unique_ptr<Impl> impl_;
 };
 
 } // namespace sensel

@@ -1297,8 +1297,7 @@ SenselStatus WINAPI senselGetDeviceList(SenselDeviceList *list)
   if (!list)
     return SENSEL_ERROR;
 
-  senselSerialScan(list);
-  return SENSEL_OK;
+  return senselSerialScan(list) < 0 ? SENSEL_ERROR : SENSEL_OK;
 }
 
 SENSEL_API
@@ -1334,8 +1333,13 @@ SENSEL_API
 SenselStatus WINAPI senselOpenDeviceByID(SENSEL_HANDLE *handle, unsigned char idx)
 {
   SenselStatus status  = SENSEL_OK;
-  SenselDevice *device = malloc(sizeof(SenselDevice));
+  SenselDevice *device;
+  unsigned char serial_opened = false;
 
+  if (!handle)
+    return SENSEL_ERROR;
+  *handle = NULL;
+  device = malloc(sizeof(SenselDevice));
   if (!device)
     return SENSEL_ERROR;
 
@@ -1344,6 +1348,7 @@ SenselStatus WINAPI senselOpenDeviceByID(SENSEL_HANDLE *handle, unsigned char id
 
   if (!senselSerialOpenDeviceByID(&device->sensor_serial, idx))
     goto error;
+  serial_opened = true;
 
   status = senselSoftReset(*handle);
   if (status != SENSEL_OK)
@@ -1355,7 +1360,10 @@ SenselStatus WINAPI senselOpenDeviceByID(SENSEL_HANDLE *handle, unsigned char id
   return SENSEL_OK;
 
 error:
+  if(serial_opened)
+    senselSerialClose(&device->sensor_serial);
   free(device);
+  *handle = NULL;
   return SENSEL_ERROR;
 }
 
@@ -1363,8 +1371,15 @@ SENSEL_API
 SenselStatus WINAPI senselOpenDeviceBySerialNum(SENSEL_HANDLE *handle, unsigned char *serial_num)
 {
   SenselStatus status   = SENSEL_OK;
-  SenselDevice *device  = malloc(sizeof(SenselDevice));
+  SenselDevice *device;
+  unsigned char serial_opened = false;
 
+  if (!handle)
+    return SENSEL_ERROR;
+  *handle = NULL;
+  if (!serial_num)
+    return SENSEL_ERROR;
+  device = malloc(sizeof(SenselDevice));
   if (!device)
     return SENSEL_ERROR;
 
@@ -1373,6 +1388,7 @@ SenselStatus WINAPI senselOpenDeviceBySerialNum(SENSEL_HANDLE *handle, unsigned 
 
   if (!senselSerialOpenDeviceBySerialNum(&device->sensor_serial, (char*)serial_num))
     goto error;
+  serial_opened = true;
 
   status = senselSoftReset(*handle);
   if (status != SENSEL_OK)
@@ -1384,7 +1400,10 @@ SenselStatus WINAPI senselOpenDeviceBySerialNum(SENSEL_HANDLE *handle, unsigned 
   return SENSEL_OK;
 
 error:
+  if(serial_opened)
+    senselSerialClose(&device->sensor_serial);
   free(device);
+  *handle = NULL;
   return SENSEL_ERROR;
 }
 
@@ -1392,8 +1411,15 @@ SENSEL_API
 SenselStatus WINAPI senselOpenDeviceByComPort(SENSEL_HANDLE *handle, unsigned char *com_port)
 {
   SenselStatus status   = SENSEL_OK;
-  SenselDevice *device  = malloc(sizeof(SenselDevice));
+  SenselDevice *device;
+  unsigned char serial_opened = false;
 
+  if (!handle)
+    return SENSEL_ERROR;
+  *handle = NULL;
+  if (!com_port)
+    return SENSEL_ERROR;
+  device = malloc(sizeof(SenselDevice));
   if (!device)
     return SENSEL_ERROR;
 
@@ -1402,6 +1428,7 @@ SenselStatus WINAPI senselOpenDeviceByComPort(SENSEL_HANDLE *handle, unsigned ch
 
   if (!senselSerialOpenDeviceByComPort(&device->sensor_serial, (char*)com_port))
     goto error;
+  serial_opened = true;
 
   status = senselSoftReset(*handle);
   if (status != SENSEL_OK)
@@ -1413,7 +1440,10 @@ SenselStatus WINAPI senselOpenDeviceByComPort(SENSEL_HANDLE *handle, unsigned ch
   return SENSEL_OK;
 
 error:
+  if(serial_opened)
+    senselSerialClose(&device->sensor_serial);
   free(device);
+  *handle = NULL;
   return SENSEL_ERROR;
 }
 
@@ -1421,8 +1451,13 @@ SENSEL_API
 SenselStatus WINAPI senselOpen(SENSEL_HANDLE *handle)
 {
   SenselStatus status   = SENSEL_OK;
-  SenselDevice *device  = malloc(sizeof(SenselDevice));
+  SenselDevice *device;
+  unsigned char serial_opened = false;
 
+  if (!handle)
+    return SENSEL_ERROR;
+  *handle = NULL;
+  device = malloc(sizeof(SenselDevice));
   if (!device)
     return SENSEL_ERROR;
 
@@ -1432,6 +1467,7 @@ SenselStatus WINAPI senselOpen(SENSEL_HANDLE *handle)
   // Connect to the sensor
   if(!senselSerialOpen(&device->sensor_serial, NULL))
     goto error;
+  serial_opened = true;
 
   status = senselSoftReset(*handle);
   if (status != SENSEL_OK)
@@ -1443,7 +1479,10 @@ SenselStatus WINAPI senselOpen(SENSEL_HANDLE *handle)
   return SENSEL_OK;
 error:
   printf("Error\n");
+  if(serial_opened)
+    senselSerialClose(&device->sensor_serial);
   free(device);
+  *handle = NULL;
   return SENSEL_ERROR;
 }
 

@@ -1,167 +1,337 @@
 #include "sensel/morph.h"
+#include "port_recovery.hpp"
+
 #include <algorithm>
-#include <cstdio>
-#include <cstring>
+#include <chrono>
 #include <cmath>
-#include <dirent.h>
-#include <fcntl.h>
-#include <termios.h>
-#include <unistd.h>
+#include <cstdint>
+#include <sstream>
+#include <stdexcept>
+#include <utility>
+
 extern "C" {
 #include "sensel.h"
 #include "sensel_register_map.h"
 }
 
 namespace sensel {
+namespace {
 
-// One bulk LED write costs ~4.5 ms (a scan period); 20 Hz keeps the control
-// loop >90% available while the strip still animates smoothly.
-static constexpr auto LED_MIN_PERIOD = std::chrono::milliseconds(50);
-static constexpr int  LED_QUANT      = 15;   // brightness steps; kills jitter rewrites
+constexpr auto ledMinimumPeriod = std::chrono::milliseconds(50);
+constexpr int ledQuantizationSteps = 15;
 
-// The lib's open-probe reads the magic register without flushing the line
-// first, so ANY bytes left in flight by a previous session (a crashed app, a
-// SIGKILL, even a clean quit that raced the stream) make the probe fail until
-// the Morph is power-cycled. Self-heal: before opening, blindly send
-// SCAN_ENABLED=0 to candidate ports and drain whatever is stuck in the pipe.
-static void sanitizePort(const char* path) {
-    int fd = ::open(path, O_RDWR | O_NONBLOCK | O_NOCTTY);
-    if (fd < 0) return;
-    termios opt;
-    tcgetattr(fd, &opt);
-    opt.c_iflag &= ~(IGNBRK | BRKINT | PARMRK | ISTRIP | INLCR | IGNCR | ICRNL | IXON);
-    opt.c_oflag &= ~OPOST;
-    opt.c_lflag &= ~(ECHO | ECHONL | ICANON | ISIG | IEXTEN);
-    opt.c_cflag &= ~(CSIZE | PARENB);
-    opt.c_cflag |= CS8;
-    cfsetispeed(&opt, B115200);
-    cfsetospeed(&opt, B115200);
-    tcsetattr(fd, TCSANOW, &opt);
-    // write SCAN_ENABLED (0x25) = 0: {addr, reg, size} + data + checksum
-    const unsigned char stop[] = { 0x01, 0x25, 0x01, 0x00, 0x00 };
-    (void)!::write(fd, stop, sizeof stop);
-    unsigned char junk[4096];
-    for (int i = 0; i < 50; ++i) {                 // drain for ~250 ms
-        while (::read(fd, junk, sizeof junk) > 0) {}
-        usleep(5000);
+std::string makeErrorMessage(Operation operation, int nativeStatus, const std::string& details) {
+    std::ostringstream message;
+    message << operationName(operation) << " failed (Sensel status " << nativeStatus << ")";
+    if (!details.empty()) {
+        message << ": " << details;
     }
-    tcflush(fd, TCIOFLUSH);
-    ::close(fd);
+    return message.str();
 }
 
-static void sanitizeCandidatePorts() {
-    DIR* d = opendir("/dev");
-    if (!d) return;
-    while (dirent* e = readdir(d)) {
-        if (std::strstr(e->d_name, "cu.usbmodem") || std::strstr(e->d_name, "ttyACM") ||
-            std::strstr(e->d_name, "morph") || std::strstr(e->d_name, "squirt")) {
-            char path[300];
-            std::snprintf(path, sizeof path, "/dev/%s", e->d_name);
-            sanitizePort(path);
+ContactState contactState(unsigned int state) noexcept {
+    switch (state) {
+    case CONTACT_START:
+        return ContactState::Start;
+    case CONTACT_MOVE:
+        return ContactState::Move;
+    case CONTACT_END:
+        return ContactState::End;
+    default:
+        return ContactState::Invalid;
+    }
+}
+
+} // namespace
+
+const char* operationName(Operation operation) noexcept {
+    switch (operation) {
+    case Operation::None: return "none";
+    case Operation::Open: return "open Sensel Morph";
+    case Operation::RecoverPort: return "recover Sensel serial port";
+    case Operation::GetSensorInfo: return "read Sensel sensor information";
+    case Operation::GetNumLeds: return "read Sensel LED count";
+    case Operation::GetMaxLedBrightness: return "read Sensel maximum LED brightness";
+    case Operation::GetLedRegisterSize: return "read Sensel LED register size";
+    case Operation::SetContactMask: return "set Sensel contact mask";
+    case Operation::SetFrameContent: return "set Sensel frame content";
+    case Operation::AllocateFrame: return "allocate Sensel frame";
+    case Operation::StartScanning: return "start Sensel scanning";
+    case Operation::ReadSensor: return "read Sensel sensor";
+    case Operation::GetFrameCount: return "read Sensel frame count";
+    case Operation::GetFrame: return "read Sensel frame";
+    case Operation::FlushLeds: return "flush Sensel LEDs";
+    }
+    return "unknown Sensel operation";
+}
+
+Error::Error(Operation operation, int nativeStatus, std::string details)
+    : std::runtime_error(makeErrorMessage(operation, nativeStatus, details)),
+      operation_(operation),
+      nativeStatus_(nativeStatus) {
+}
+
+Operation Error::operation() const noexcept {
+    return operation_;
+}
+
+int Error::nativeStatus() const noexcept {
+    return nativeStatus_;
+}
+
+class Morph::Impl {
+public:
+    Impl() = default;
+
+    ~Impl() noexcept {
+        shutdown();
+    }
+
+    void initialize(const MorphOptions& options) {
+        if (options.recoverStaleStream && options.devicePath.empty()) {
+            throw Error(Operation::RecoverPort,
+                        SENSEL_ERROR,
+                        "recoverStaleStream requires an explicit devicePath");
+        }
+
+        auto openDevice = [&]() {
+            if (options.devicePath.empty()) {
+                return senselOpen(&handle_);
+            }
+            return senselOpenDeviceByComPort(
+                &handle_,
+                reinterpret_cast<unsigned char*>(const_cast<char*>(options.devicePath.c_str())));
+        };
+
+        auto status = openDevice();
+        if (status != SENSEL_OK && options.recoverStaleStream) {
+            if (!detail::recoverExplicitPort(options.devicePath)) {
+                throw Error(Operation::RecoverPort, SENSEL_ERROR, options.devicePath);
+            }
+            status = openDevice();
+        }
+        require(status, Operation::Open);
+
+        SenselSensorInfo sensorInfo{};
+        require(senselGetSensorInfo(handle_, &sensorInfo), Operation::GetSensorInfo);
+        info_.widthMm = sensorInfo.width;
+        info_.heightMm = sensorInfo.height;
+
+        unsigned char ledCount = 0;
+        require(senselGetNumAvailableLEDs(handle_, &ledCount), Operation::GetNumLeds);
+        info_.numLeds = ledCount;
+        require(senselGetMaxLEDBrightness(handle_, &maximumLedBrightness_),
+                Operation::GetMaxLedBrightness);
+
+        unsigned char registerSize = 1;
+        require(senselReadReg(handle_, SENSEL_REG_LED_BRIGHTNESS_SIZE, 1, &registerSize),
+                Operation::GetLedRegisterSize);
+        ledRegisterSize_ = registerSize == 2 ? 2u : 1u;
+        ledBytes_.assign(info_.numLeds * ledRegisterSize_, 0);
+        ledsDirty_ = !ledBytes_.empty();
+
+        require(senselSetContactsMask(handle_, CONTACT_MASK_ELLIPSE), Operation::SetContactMask);
+        require(senselSetFrameContent(handle_, FRAME_CONTENT_CONTACTS_MASK),
+                Operation::SetFrameContent);
+        require(senselAllocateFrameData(handle_, &frame_), Operation::AllocateFrame);
+        require(senselStartScanning(handle_), Operation::StartScanning);
+        scanning_ = true;
+    }
+
+    const DeviceInfo& info() const noexcept {
+        return info_;
+    }
+
+    ReadResult readFrames(std::vector<Frame>& out) {
+        out.clear();
+        if (!handle_ || !frame_) {
+            return {ReadStatus::DeviceError, 0, Operation::ReadSensor, SENSEL_ERROR};
+        }
+
+        auto status = senselReadSensor(handle_);
+        if (status != SENSEL_OK) {
+            return {ReadStatus::DeviceError, 0, Operation::ReadSensor, status};
+        }
+
+        unsigned int availableFrames = 0;
+        status = senselGetNumAvailableFrames(handle_, &availableFrames);
+        if (status != SENSEL_OK) {
+            return {ReadStatus::DeviceError, 0, Operation::GetFrameCount, status};
+        }
+        if (availableFrames == 0) {
+            return {ReadStatus::NoFrames, 0, Operation::None, SENSEL_OK};
+        }
+
+        std::vector<Frame> batch;
+        batch.reserve(availableFrames);
+        for (unsigned int frameIndex = 0; frameIndex < availableFrames; ++frameIndex) {
+            status = senselGetFrame(handle_, frame_);
+            if (status != SENSEL_OK) {
+                return {ReadStatus::DeviceError, 0, Operation::GetFrame, status};
+            }
+
+            Frame frame;
+            frame.lostFrameCount = frame_->lost_frame_count;
+            frame.contacts.reserve(frame_->n_contacts);
+            for (unsigned int contactIndex = 0; contactIndex < frame_->n_contacts; ++contactIndex) {
+                const SenselContact& source = frame_->contacts[contactIndex];
+                frame.contacts.push_back(Contact{
+                    source.id,
+                    contactState(source.state),
+                    source.x_pos,
+                    source.y_pos,
+                    source.total_force,
+                    source.area,
+                    source.orientation,
+                    source.major_axis,
+                    source.minor_axis,
+                });
+            }
+            batch.push_back(std::move(frame));
+        }
+
+        out = std::move(batch);
+        return {ReadStatus::FramesAvailable, out.size(), Operation::None, SENSEL_OK};
+    }
+
+    void setLed(std::size_t index, float normalizedBrightness) {
+        if (index >= info_.numLeds) {
+            throw std::out_of_range("Sensel LED index is out of range");
+        }
+        if (!std::isfinite(normalizedBrightness)) {
+            throw std::invalid_argument("Sensel LED brightness must be finite");
+        }
+
+        const float clamped = std::max(0.0f, std::min(normalizedBrightness, 1.0f));
+        const auto quantized = static_cast<std::uint16_t>(
+            std::lround(clamped * static_cast<float>(ledQuantizationSteps)) *
+            static_cast<long>(maximumLedBrightness_) / ledQuantizationSteps);
+
+        if (ledRegisterSize_ == 1) {
+            const auto byte = static_cast<std::uint8_t>(quantized);
+            if (ledBytes_[index] == byte) {
+                return;
+            }
+            ledBytes_[index] = byte;
+        } else {
+            const auto low = static_cast<std::uint8_t>(quantized & 0xffu);
+            const auto high = static_cast<std::uint8_t>(quantized >> 8u);
+            const auto offset = index * 2;
+            if (ledBytes_[offset] == low && ledBytes_[offset + 1] == high) {
+                return;
+            }
+            ledBytes_[offset] = low;
+            ledBytes_[offset + 1] = high;
+        }
+        ledsDirty_ = true;
+    }
+
+    LedFlushStatus flushLeds() noexcept {
+        if (!handle_) {
+            return LedFlushStatus::DeviceError;
+        }
+        if (!ledsDirty_) {
+            return LedFlushStatus::NoChange;
+        }
+
+        const auto now = std::chrono::steady_clock::now();
+        if (now - lastLedSend_ < ledMinimumPeriod) {
+            return LedFlushStatus::RateLimited;
+        }
+
+        const auto status = senselWriteRegVS(
+            handle_,
+            SENSEL_REG_LED_BRIGHTNESS,
+            static_cast<unsigned int>(ledBytes_.size()),
+            ledBytes_.data(),
+            nullptr);
+        if (status != SENSEL_OK) {
+            return LedFlushStatus::DeviceError;
+        }
+
+        lastLedSend_ = now;
+        ledsDirty_ = false;
+        return LedFlushStatus::Flushed;
+    }
+
+private:
+    static void require(SenselStatus status, Operation operation) {
+        if (status != SENSEL_OK) {
+            throw Error(operation, status);
         }
     }
-    closedir(d);
-}
 
-bool Morph::open() {
-    sanitizeCandidatePorts();
-    SENSEL_HANDLE h = nullptr;
-    SenselStatus rc = SENSEL_OK;
-    for (int i = 0; i < 5 && !h; ++i) rc = senselOpen(&h);   // auto-scan can miss once
-    if (rc != SENSEL_OK || !h) return false;
-    handle_ = h;
-
-    SenselSensorInfo info;
-    senselGetSensorInfo(h, &info);
-    width_  = info.width;
-    height_ = info.height;
-
-    unsigned char nleds = 0; senselGetNumAvailableLEDs(h, &nleds);
-    senselGetMaxLEDBrightness(h, &maxBright_);
-    unsigned char regSize = 1;
-    senselReadReg(h, SENSEL_REG_LED_BRIGHTNESS_SIZE, 1, &regSize);
-    ledRegSize_ = (regSize == 2) ? 2 : 1;
-    numLeds_ = nleds;
-    ledArr_.assign((size_t)numLeds_ * ledRegSize_, 0);
-    ledDirty_ = true;                     // force one clearing write
-    return true;
-}
-
-void Morph::startContacts() {
-    SENSEL_HANDLE h = (SENSEL_HANDLE)handle_;
-    // Orientation lives in the optional ellipse payload. Without this contact
-    // mask, SenselContact::orientation is not guaranteed to be valid.
-    senselSetContactsMask(h, CONTACT_MASK_ELLIPSE);
-    senselSetFrameContent(h, FRAME_CONTENT_CONTACTS_MASK);
-    SenselFrameData* f = nullptr;
-    senselAllocateFrameData(h, &f);
-    frame_ = f;
-    senselStartScanning(h);
-}
-
-int Morph::poll(std::vector<Contact>& out) {
-    out.clear();
-    SENSEL_HANDLE h = (SENSEL_HANDLE)handle_;
-    SenselFrameData* f = (SenselFrameData*)frame_;
-    if (senselReadSensor(h) != SENSEL_OK) return -1;
-    unsigned int nframes = 0;
-    senselGetNumAvailableFrames(h, &nframes);
-    if (nframes == 0) return -1;
-    for (unsigned int i = 0; i < nframes; ++i) {
-        if (senselGetFrame(h, f) != SENSEL_OK) continue;
-        out.clear();   // keep only the most recent frame
-        for (int c = 0; c < f->n_contacts; ++c) {
-            const SenselContact& sc = f->contacts[c];
-            float orientation = (sc.content_bit_mask & CONTACT_MASK_ELLIPSE) ? sc.orientation : 0.f;
-            out.push_back(Contact{ sc.id, (int)sc.state, sc.x_pos, sc.y_pos,
-                                   sc.total_force, sc.area, orientation });
+    void shutdown() noexcept {
+        if (!handle_) {
+            return;
         }
+
+        if (scanning_) {
+            (void)senselStopScanning(handle_);
+            scanning_ = false;
+        }
+
+        if (!ledBytes_.empty()) {
+            std::fill(ledBytes_.begin(), ledBytes_.end(), 0);
+            (void)senselWriteRegVS(
+                handle_,
+                SENSEL_REG_LED_BRIGHTNESS,
+                static_cast<unsigned int>(ledBytes_.size()),
+                ledBytes_.data(),
+                nullptr);
+        }
+
+        if (frame_) {
+            (void)senselFreeFrameData(handle_, frame_);
+            frame_ = nullptr;
+        }
+
+        (void)senselClose(handle_);
+        handle_ = nullptr;
     }
-    return (int)out.size();
+
+    SENSEL_HANDLE handle_ = nullptr;
+    SenselFrameData* frame_ = nullptr;
+    DeviceInfo info_;
+    unsigned short maximumLedBrightness_ = 0;
+    std::size_t ledRegisterSize_ = 1;
+    std::vector<std::uint8_t> ledBytes_;
+    std::chrono::steady_clock::time_point lastLedSend_{};
+    bool ledsDirty_ = false;
+    bool scanning_ = false;
+};
+
+Morph::Morph(MorphOptions options)
+    : impl_(std::make_unique<Impl>()) {
+    impl_->initialize(options);
 }
 
-void Morph::setLed(int idx, float v01) {
-    if (idx < 0 || idx >= numLeds_) return;
-    if (v01 < 0) v01 = 0; if (v01 > 1) v01 = 1;
-    // coarse quantization: finger-force jitter must not trigger serial traffic
-    uint16_t b = (uint16_t)(std::lround(v01 * LED_QUANT) * (long)maxBright_ / LED_QUANT);
-    if (ledRegSize_ == 1) {
-        if (ledArr_[idx] == (uint8_t)b) return;
-        ledArr_[idx] = (uint8_t)b;
-    } else {
-        uint8_t lo = (uint8_t)(b & 0xFF), hi = (uint8_t)(b >> 8);
-        if (ledArr_[2*idx] == lo && ledArr_[2*idx + 1] == hi) return;
-        ledArr_[2*idx] = lo; ledArr_[2*idx + 1] = hi;
-    }
-    ledDirty_ = true;
+Morph::~Morph() noexcept = default;
+Morph::Morph(Morph&&) noexcept = default;
+Morph& Morph::operator=(Morph&&) noexcept = default;
+
+const DeviceInfo& Morph::info() const noexcept {
+    static const DeviceInfo emptyInfo{};
+    return impl_ ? impl_->info() : emptyInfo;
 }
 
-void Morph::flushLeds() {
-    if (!ledDirty_ || !handle_) return;
-    auto now = std::chrono::steady_clock::now();
-    if (now - lastLedSend_ < LED_MIN_PERIOD) return;
-    lastLedSend_ = now;
-    ledDirty_ = false;
-    senselWriteRegVS((SENSEL_HANDLE)handle_, SENSEL_REG_LED_BRIGHTNESS,
-                     (unsigned int)ledArr_.size(), ledArr_.data(), nullptr);
+ReadResult Morph::readFrames(std::vector<Frame>& out) {
+    if (!impl_) {
+        out.clear();
+        return {ReadStatus::DeviceError, 0, Operation::ReadSensor, SENSEL_ERROR};
+    }
+    return impl_->readFrames(out);
 }
 
-void Morph::close() {
-    if (!handle_) return;
-    SENSEL_HANDLE h = (SENSEL_HANDLE)handle_;
-    // Stop the stream FIRST, and stubbornly: a SIGINT-interrupted read leaves
-    // the serial protocol desynced, and if scanning survives close() the
-    // device won't answer the next open's probe until it is power-cycled.
-    for (int tries = 0; tries < 3; ++tries) {
-        if (senselStopScanning(h) == SENSEL_OK) break;
-        senselReadSensor(h);                       // drain frames to resync
+void Morph::setLed(std::size_t index, float normalizedBrightness) {
+    if (!impl_) {
+        throw std::logic_error("cannot use a moved-from Sensel Morph");
     }
-    std::fill(ledArr_.begin(), ledArr_.end(), 0);
-    senselWriteRegVS(h, SENSEL_REG_LED_BRIGHTNESS,
-                     (unsigned int)ledArr_.size(), ledArr_.data(), nullptr);
-    if (frame_) senselFreeFrameData(h, (SenselFrameData*)frame_);
-    senselClose(h);
-    handle_ = frame_ = nullptr;
+    impl_->setLed(index, normalizedBrightness);
+}
+
+LedFlushStatus Morph::flushLeds() noexcept {
+    return impl_ ? impl_->flushLeds() : LedFlushStatus::DeviceError;
 }
 
 } // namespace sensel

@@ -63,6 +63,53 @@ The build exports two targets:
 The C++ wrapper's public header is `#include <sensel/morph.h>` and exposes
 `sensel::Morph` and `sensel::Contact`.
 
+### C++ Wrapper
+
+`sensel::Morph` is a synchronous RAII owner. Construction opens the device,
+configures contact frames, allocates frame storage, and starts scanning. If any
+setup operation fails, construction throws `sensel::Error` and releases every
+resource acquired so far. The class is movable but not copyable.
+
+```cpp
+#include <sensel/morph.h>
+
+#include <vector>
+
+sensel::Morph morph; // ordinary Sensel discovery
+std::vector<sensel::Frame> frames;
+
+const auto result = morph.readFrames(frames);
+if (result.status == sensel::ReadStatus::FramesAvailable) {
+    for (const auto& frame : frames) {
+        for (const auto& contact : frame.contacts) {
+            // Positions are millimetres and force is grams.
+        }
+    }
+}
+```
+
+`readFrames()` returns every pending frame in order. It may block for the C
+library's serial timeout, so call it from a device worker or control thread,
+never from an audio callback or a shared nonblocking poll loop.
+
+An explicit path avoids broad device selection:
+
+```cpp
+sensel::Morph morph({"/dev/cu.usbmodem...", false});
+```
+
+Stale-stream recovery is destructive and disabled by default. It can only be
+enabled together with an explicit path. The wrapper first tries a normal open,
+then sends the stop-scanning command to that exact path, drains it for at most
+250 ms, and retries once:
+
+```cpp
+sensel::Morph morph({"/dev/cu.usbmodem...", true});
+```
+
+LED values are staged with `setLed()` and sent as one rate-limited bulk update
+with `flushLeds()`. Failed writes remain dirty so a later flush can retry.
+
 ## Getting Started
 
 Before getting started with this API, make sure your device's firmware is up to date. Go to [Sensel's Start Page](http://sensel.com/start) to get the latest version of the SenselApp and update your device.

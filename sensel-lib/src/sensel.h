@@ -252,10 +252,10 @@ extern "C" {
 
   /*!
    * @param      handle   Sensel device handle to be initialized
-   * @param      com_port com_port path of the device to open
+   * @param      com_port Direct serial device path to open
    * @return     SENSEL_OK on success or error
-   * @discussion Opens the devices associated to the given com_port as returned by senselGetDeviceList.
-   *              senselGetDeviceList must be called prior to this call
+   * @discussion Opens the device at com_port. Unlike the ID and serial-number
+   *              variants, this call does not require senselGetDeviceList first.
    */
   SENSEL_API
   SenselStatus WINAPI senselOpenDeviceByComPort(SENSEL_HANDLE *handle, unsigned char *com_port);
