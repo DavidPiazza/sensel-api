@@ -66,6 +66,21 @@ void testOwnershipAndInformation() {
     CHECK(fake_sensel::callCount(fake_sensel::Call::Close) == 1);
 }
 
+void testMoveAssignmentCleansBothOwners() {
+    fake_sensel::reset();
+    {
+        sensel::Morph first;
+        sensel::Morph second;
+        second = std::move(first);
+        std::vector<sensel::Frame> frames;
+        CHECK(first.readFrames(frames).status == sensel::ReadStatus::DeviceError);
+        CHECK(first.flushLeds() == sensel::LedFlushStatus::DeviceError);
+    }
+    CHECK(fake_sensel::callCount(fake_sensel::Call::StopScanning) == 2);
+    CHECK(fake_sensel::callCount(fake_sensel::Call::FreeFrame) == 2);
+    CHECK(fake_sensel::callCount(fake_sensel::Call::Close) == 2);
+}
+
 void testSetupFailuresAreTransactional() {
     const std::vector<std::pair<fake_sensel::Call, sensel::Operation>> cases{
         {fake_sensel::Call::OpenAuto, sensel::Operation::Open},
@@ -97,9 +112,11 @@ void testSetupFailuresAreTransactional() {
         } else {
             CHECK(fake_sensel::callCount(fake_sensel::Call::Close) == 1);
         }
-        if (testCase.first == fake_sensel::Call::StartScanning) {
-            CHECK(fake_sensel::callCount(fake_sensel::Call::FreeFrame) == 1);
-        }
+        const bool frameWasAllocated =
+            testCase.first == fake_sensel::Call::StartScanning;
+        CHECK(fake_sensel::callCount(fake_sensel::Call::FreeFrame) ==
+              (frameWasAllocated ? 1u : 0u));
+        CHECK(fake_sensel::callCount(fake_sensel::Call::StopScanning) == 0);
     }
 }
 
@@ -150,6 +167,19 @@ void testReadErrorsDoNotPublishPartialBatches() {
     fake_sensel::fail(fake_sensel::Call::ReadSensor);
     sensel::Morph failingMorph;
     CHECK(failingMorph.readFrames(frames).failedOperation == sensel::Operation::ReadSensor);
+}
+
+void testShutdownAfterDeviceError() {
+    fake_sensel::reset();
+    {
+        sensel::Morph morph;
+        fake_sensel::failNext(fake_sensel::Call::ReadSensor);
+        std::vector<sensel::Frame> frames;
+        CHECK(morph.readFrames(frames).status == sensel::ReadStatus::DeviceError);
+    }
+    CHECK(fake_sensel::callCount(fake_sensel::Call::StopScanning) == 1);
+    CHECK(fake_sensel::callCount(fake_sensel::Call::FreeFrame) == 1);
+    CHECK(fake_sensel::callCount(fake_sensel::Call::Close) == 1);
 }
 
 void testLedStagingAndRetry() {
@@ -231,9 +261,11 @@ void testExplicitPathAndRecoveryPolicy() {
 
 int main() {
     testOwnershipAndInformation();
+    testMoveAssignmentCleansBothOwners();
     testSetupFailuresAreTransactional();
     testFrameBatchesAndStatuses();
     testReadErrorsDoNotPublishPartialBatches();
+    testShutdownAfterDeviceError();
     testLedStagingAndRetry();
     testExplicitPathAndRecoveryPolicy();
 
