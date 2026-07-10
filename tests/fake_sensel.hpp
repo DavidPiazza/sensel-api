@@ -49,6 +49,7 @@ void fail(Call call, int occurrence = 1);
 void failFirst(Call call, int occurrences);
 void failNext(Call call);
 void setRecoveryResult(bool result);
+void setLedCount(unsigned char count);
 void queueFrame(TestFrame frame);
 Snapshot snapshot();
 int callCount(Call call);

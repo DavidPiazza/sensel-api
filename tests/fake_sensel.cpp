@@ -29,6 +29,7 @@ struct State {
     int failureFirstOccurrence = 0;
     int failureLastOccurrence = 0;
     bool recoveryResult = true;
+    unsigned char ledCount = 2;
     std::deque<TestFrame> frames;
     std::size_t availableFrames = 0;
 };
@@ -59,6 +60,7 @@ void reset() {
     value.failureFirstOccurrence = 0;
     value.failureLastOccurrence = 0;
     value.recoveryResult = true;
+    value.ledCount = 2;
     value.frames.clear();
     value.availableFrames = 0;
 }
@@ -94,6 +96,12 @@ void setRecoveryResult(bool result) {
     auto& value = state();
     std::lock_guard<std::mutex> lock(value.mutex);
     value.recoveryResult = result;
+}
+
+void setLedCount(unsigned char count) {
+    auto& value = state();
+    std::lock_guard<std::mutex> lock(value.mutex);
+    value.ledCount = count;
 }
 
 void queueFrame(TestFrame frame) {
@@ -170,7 +178,7 @@ SenselStatus senselGetNumAvailableLEDs(SENSEL_HANDLE, unsigned char* count) {
     std::lock_guard<std::mutex> lock(value.mutex);
     const auto result = fake_sensel::resultFor(value, fake_sensel::Call::GetNumLeds);
     if (result == SENSEL_OK) {
-        *count = 2;
+        *count = value.ledCount;
     }
     return result;
 }
