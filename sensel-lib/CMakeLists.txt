@@ -7,6 +7,7 @@ project(sensel C)
 
 add_library(sensel STATIC
     src/sensel.c
+    src/sensel_frame_counter.c
     src/sensel_register.c
     src/sensel_serial_linux.c)   # POSIX serial layer; works on macOS and Linux
 
@@ -16,4 +17,16 @@ set_target_properties(sensel PROPERTIES C_STANDARD 99 POSITION_INDEPENDENT_CODE 
 
 if(NOT WIN32)
     target_compile_options(sensel PRIVATE -fvisibility=hidden -O2 -Wall)
+endif()
+
+if(BUILD_TESTING)
+    add_executable(sensel_frame_counter_tests
+        tests/sensel_frame_counter_tests.c
+        src/sensel_frame_counter.c)
+    target_include_directories(sensel_frame_counter_tests PRIVATE src)
+    set_target_properties(sensel_frame_counter_tests PROPERTIES C_STANDARD 99)
+    if(NOT WIN32)
+        target_compile_options(sensel_frame_counter_tests PRIVATE -Wall -Wextra -Werror)
+    endif()
+    add_test(NAME sensel_frame_counter_tests COMMAND sensel_frame_counter_tests)
 endif()

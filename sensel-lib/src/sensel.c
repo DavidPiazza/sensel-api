@@ -33,6 +33,7 @@
 #include "sensel_serial.h"
 #include "sensel_register_map.h"
 #include "sensel_register.h"
+#include "sensel_frame_counter.h"
 
 #ifdef SENSEL_PRESSURE
 #include "sensel_decompress.h"
@@ -799,14 +800,11 @@ static unsigned char _senselParseFrame(SENSEL_HANDLE handle, SenselFrameData *da
   frame_data_size -= 6;
 
   // Fill in frame_info
-  int elapsed_frames = 0;
-  elapsed_frames = (int)rolling_frame_counter - (int)device->prev_rolling_frame_counter;
-  if(elapsed_frames <= 0) elapsed_frames += 256;
-
   data->content_bit_mask = content_bit_mask;
-  data->lost_frame_count = (unsigned int)(elapsed_frames - 1);
-
-  device->prev_rolling_frame_counter = rolling_frame_counter;
+  data->lost_frame_count = senselFrameCounterAdvance(
+      &device->prev_rolling_frame_counter,
+      &device->frame_counter_initialized,
+      rolling_frame_counter);
 
 	//////////////////////////////////////
 	// Extract the contacts if available
@@ -990,7 +988,8 @@ SenselStatus WINAPI senselStartScanning(SENSEL_HANDLE handle)
 
   device->num_buffered_frames = 0;
   device->frame_buffer_size = 0;
-  device->prev_rolling_frame_counter = 255;
+  senselFrameCounterReset(&device->prev_rolling_frame_counter,
+                          &device->frame_counter_initialized);
 
   if(device->scan_mode == SCAN_MODE_SYNC)
   {
@@ -1174,7 +1173,8 @@ static SenselStatus _senselInitHandle(SENSEL_HANDLE handle)
   device->scan_buffer_control        = 0;
   device->scan_mode                  = SCAN_MODE_SYNC;
   device->num_buffered_frames        = 0;
-  device->prev_rolling_frame_counter = 0;
+  senselFrameCounterReset(&device->prev_rolling_frame_counter,
+                          &device->frame_counter_initialized);
   device->prev_timestamp             = 0;
   device->dynamic_baseline_enabled   = 1;
   device->scanning_active            = false;

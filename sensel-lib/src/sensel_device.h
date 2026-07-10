@@ -81,6 +81,7 @@ extern "C" {
     unsigned char               scanning_active;          // Is scanning enabled / disabled
     int                         num_buffered_frames;      // Number of frames currently buffered
     unsigned char               prev_rolling_frame_counter;
+    unsigned char               frame_counter_initialized;
     unsigned int                prev_timestamp;           // Timestamp of the previous frame
 
     unsigned char               dynamic_baseline_enabled; // Is dynamic baselining enabled
