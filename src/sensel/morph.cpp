@@ -226,17 +226,17 @@ public:
         ledsDirty_ = true;
     }
 
-    LedFlushStatus flushLeds() noexcept {
+    LedFlushResult flushLeds() noexcept {
         if (!handle_) {
-            return LedFlushStatus::DeviceError;
+            return {LedFlushStatus::DeviceError, Operation::FlushLeds, SENSEL_ERROR};
         }
         if (!ledsDirty_) {
-            return LedFlushStatus::NoChange;
+            return {LedFlushStatus::NoChange, Operation::None, SENSEL_OK};
         }
 
         const auto now = std::chrono::steady_clock::now();
         if (now - lastLedSend_ < ledMinimumPeriod) {
-            return LedFlushStatus::RateLimited;
+            return {LedFlushStatus::RateLimited, Operation::None, SENSEL_OK};
         }
 
         const auto status = senselWriteRegVS(
@@ -246,12 +246,12 @@ public:
             ledBytes_.data(),
             nullptr);
         if (status != SENSEL_OK) {
-            return LedFlushStatus::DeviceError;
+            return {LedFlushStatus::DeviceError, Operation::FlushLeds, status};
         }
 
         lastLedSend_ = now;
         ledsDirty_ = false;
-        return LedFlushStatus::Flushed;
+        return {LedFlushStatus::Flushed, Operation::None, SENSEL_OK};
     }
 
 private:
@@ -330,8 +330,13 @@ void Morph::setLed(std::size_t index, float normalizedBrightness) {
     impl_->setLed(index, normalizedBrightness);
 }
 
-LedFlushStatus Morph::flushLeds() noexcept {
-    return impl_ ? impl_->flushLeds() : LedFlushStatus::DeviceError;
+LedFlushResult Morph::flushLeds() noexcept {
+    return impl_ ? impl_->flushLeds()
+                 : LedFlushResult{
+                       LedFlushStatus::DeviceError,
+                       Operation::FlushLeds,
+                       SENSEL_ERROR,
+                   };
 }
 
 } // namespace sensel

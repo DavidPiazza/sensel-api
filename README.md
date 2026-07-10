@@ -108,7 +108,18 @@ sensel::Morph morph({"/dev/cu.usbmodem...", true});
 ```
 
 LED values are staged with `setLed()` and sent as one rate-limited bulk update
-with `flushLeds()`. Failed writes remain dirty so a later flush can retry.
+with the `noexcept` `flushLeds()`. Its `LedFlushResult` preserves the expected
+`NoChange`, `RateLimited`, and `Flushed` statuses. A `DeviceError` also reports
+`Operation::FlushLeds` and the native Sensel status for inspection. Failed
+writes remain dirty so a later flush can retry:
+
+```cpp
+const auto result = morph.flushLeds();
+if (result.status == sensel::LedFlushStatus::DeviceError) {
+    std::cerr << sensel::operationName(result.failedOperation)
+              << ": Sensel status " << result.nativeStatus << '\n';
+}
+```
 
 ## Getting Started
 

@@ -47,6 +47,8 @@ void testOwnershipAndInformation() {
                   "Morph moves must be noexcept");
     static_assert(std::is_nothrow_move_assignable<sensel::Morph>::value,
                   "Morph moves must be noexcept");
+    static_assert(noexcept(std::declval<sensel::Morph&>().flushLeds()),
+                  "LED polling outcomes must not throw");
 
     fake_sensel::reset();
     {
@@ -74,7 +76,10 @@ void testMoveAssignmentCleansBothOwners() {
         second = std::move(first);
         std::vector<sensel::Frame> frames;
         CHECK(first.readFrames(frames).status == sensel::ReadStatus::DeviceError);
-        CHECK(first.flushLeds() == sensel::LedFlushStatus::DeviceError);
+        const auto movedFromFlush = first.flushLeds();
+        CHECK(movedFromFlush.status == sensel::LedFlushStatus::DeviceError);
+        CHECK(movedFromFlush.failedOperation == sensel::Operation::FlushLeds);
+        CHECK(movedFromFlush.nativeStatus == SENSEL_ERROR);
     }
     CHECK(fake_sensel::callCount(fake_sensel::Call::StopScanning) == 2);
     CHECK(fake_sensel::callCount(fake_sensel::Call::FreeFrame) == 2);
@@ -188,9 +193,20 @@ void testLedStagingAndRetry() {
     sensel::Morph morph;
 
     morph.setLed(0, 1.0f);
-    CHECK(morph.flushLeds() == sensel::LedFlushStatus::DeviceError);
-    CHECK(morph.flushLeds() == sensel::LedFlushStatus::Flushed);
-    CHECK(morph.flushLeds() == sensel::LedFlushStatus::NoChange);
+    const auto failed = morph.flushLeds();
+    CHECK(failed.status == sensel::LedFlushStatus::DeviceError);
+    CHECK(failed.failedOperation == sensel::Operation::FlushLeds);
+    CHECK(failed.nativeStatus == SENSEL_ERROR);
+
+    const auto retried = morph.flushLeds();
+    CHECK(retried.status == sensel::LedFlushStatus::Flushed);
+    CHECK(retried.failedOperation == sensel::Operation::None);
+    CHECK(retried.nativeStatus == SENSEL_OK);
+
+    const auto unchanged = morph.flushLeds();
+    CHECK(unchanged.status == sensel::LedFlushStatus::NoChange);
+    CHECK(unchanged.failedOperation == sensel::Operation::None);
+    CHECK(unchanged.nativeStatus == SENSEL_OK);
 
     const auto afterRetry = fake_sensel::snapshot();
     CHECK(afterRetry.ledWrites.size() == 2);
@@ -198,7 +214,10 @@ void testLedStagingAndRetry() {
     CHECK(afterRetry.ledWrites.back()[0] == 255);
 
     morph.setLed(1, 0.5f);
-    CHECK(morph.flushLeds() == sensel::LedFlushStatus::RateLimited);
+    const auto rateLimited = morph.flushLeds();
+    CHECK(rateLimited.status == sensel::LedFlushStatus::RateLimited);
+    CHECK(rateLimited.failedOperation == sensel::Operation::None);
+    CHECK(rateLimited.nativeStatus == SENSEL_OK);
 
     bool outOfRange = false;
     try {

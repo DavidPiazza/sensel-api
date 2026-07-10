@@ -99,6 +99,12 @@ enum class LedFlushStatus {
     DeviceError
 };
 
+struct LedFlushResult {
+    LedFlushStatus status = LedFlushStatus::NoChange;
+    Operation failedOperation = Operation::None;
+    int nativeStatus = 0;
+};
+
 // Synchronous RAII owner for one Sensel Morph. Construction opens and fully
 // configures contact scanning or throws Error. readFrames() may block for the
 // C library's serial timeout and must not run on an audio or shared poll thread.
@@ -119,7 +125,10 @@ public:
 
     // Stages one normalized LED value. No device I/O occurs until flushLeds().
     void setLed(std::size_t index, float normalizedBrightness);
-    LedFlushStatus flushLeds() noexcept;
+
+    // Expected outcomes use NoChange, RateLimited, or Flushed. DeviceError
+    // reports Operation::FlushLeds and preserves the native Sensel status.
+    LedFlushResult flushLeds() noexcept;
 
 private:
     class Impl;
