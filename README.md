@@ -92,6 +92,18 @@ if (result.status == sensel::ReadStatus::FramesAvailable) {
 library's serial timeout, so call it from a device worker or control thread,
 never from an audio callback or a shared nonblocking poll loop.
 
+The Morph shares one serial link for scan reads and device writes. Applications
+that update LEDs while scanning can explicitly retain up to 50 frames on the
+device so an LED transaction cannot erase an input frame. The setting is always
+written before scanning starts—including zero, because it persists on the
+hardware:
+
+```cpp
+sensel::MorphOptions options;
+options.frameBufferCount = 8;
+sensel::Morph morph(options);
+```
+
 An explicit path avoids broad device selection:
 
 ```cpp

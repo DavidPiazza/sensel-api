@@ -40,6 +40,7 @@ State& state() {
 }
 
 bool recordAndShouldFail(State& value, Call call) {
+    value.snapshot.callOrder.push_back(call);
     const int count = ++value.snapshot.calls[callIndex(call)];
     return value.failureCall == call &&
            count >= value.failureFirstOccurrence &&
@@ -130,6 +131,7 @@ namespace sensel::detail {
 bool recoverExplicitPort(const std::string&) noexcept {
     auto& value = fake_sensel::state();
     std::lock_guard<std::mutex> lock(value.mutex);
+    value.snapshot.callOrder.push_back(fake_sensel::Call::RecoverPort);
     ++value.snapshot.calls[static_cast<std::size_t>(fake_sensel::Call::RecoverPort)];
     return value.recoveryResult;
 }
@@ -213,6 +215,13 @@ SenselStatus senselSetFrameContent(SENSEL_HANDLE, unsigned char) {
     auto& value = fake_sensel::state();
     std::lock_guard<std::mutex> lock(value.mutex);
     return fake_sensel::resultFor(value, fake_sensel::Call::SetFrameContent);
+}
+
+SenselStatus senselSetBufferControl(SENSEL_HANDLE, unsigned char count) {
+    auto& value = fake_sensel::state();
+    std::lock_guard<std::mutex> lock(value.mutex);
+    value.snapshot.frameBufferCounts.push_back(count);
+    return fake_sensel::resultFor(value, fake_sensel::Call::SetBufferControl);
 }
 
 SenselStatus senselAllocateFrameData(SENSEL_HANDLE, SenselFrameData** frame) {

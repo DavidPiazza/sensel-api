@@ -19,6 +19,7 @@ enum class Operation {
     GetLedRegisterSize,
     SetContactMask,
     SetFrameContent,
+    SetBufferControl,
     AllocateFrame,
     StartScanning,
     ReadSensor,
@@ -47,7 +48,14 @@ struct MorphOptions {
 
     // Destructive stale-stream recovery is attempted only for an explicit path.
     bool recoverStaleStream = false;
+
+    // Number of frames retained on the Morph while the shared serial link is
+    // occupied by commands such as LED writes. Zero explicitly disables the
+    // device buffer. The Morph supports at most 50 frames.
+    std::uint8_t frameBufferCount = 0;
 };
+
+inline constexpr std::uint8_t maximumFrameBufferCount = 50;
 
 struct DeviceInfo {
     float widthMm = 0.0f;

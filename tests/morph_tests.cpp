@@ -1,6 +1,7 @@
 #include "fake_sensel.hpp"
 #include "sensel/morph.h"
 
+#include <algorithm>
 #include <cmath>
 #include <iostream>
 #include <limits>
@@ -63,6 +64,11 @@ void testOwnershipAndInformation() {
         CHECK(first.readFrames(movedFromFrames).status == sensel::ReadStatus::DeviceError);
     }
 
+    const auto configured = fake_sensel::snapshot().frameBufferCounts;
+    CHECK(configured.size() == 1);
+    if (!configured.empty()) {
+        CHECK(configured.front() == 0);
+    }
     CHECK(fake_sensel::callCount(fake_sensel::Call::StopScanning) == 1);
     CHECK(fake_sensel::callCount(fake_sensel::Call::FreeFrame) == 1);
     CHECK(fake_sensel::callCount(fake_sensel::Call::Close) == 1);
@@ -95,6 +101,7 @@ void testSetupFailuresAreTransactional() {
         {fake_sensel::Call::GetLedRegisterSize, sensel::Operation::GetLedRegisterSize},
         {fake_sensel::Call::SetContactMask, sensel::Operation::SetContactMask},
         {fake_sensel::Call::SetFrameContent, sensel::Operation::SetFrameContent},
+        {fake_sensel::Call::SetBufferControl, sensel::Operation::SetBufferControl},
         {fake_sensel::Call::AllocateFrame, sensel::Operation::AllocateFrame},
         {fake_sensel::Call::StartScanning, sensel::Operation::StartScanning},
     };
@@ -123,6 +130,52 @@ void testSetupFailuresAreTransactional() {
               (frameWasAllocated ? 1u : 0u));
         CHECK(fake_sensel::callCount(fake_sensel::Call::StopScanning) == 0);
     }
+}
+
+void testFrameBufferConfigurationIsBoundedAndOrdered() {
+    fake_sensel::reset();
+    sensel::MorphOptions options;
+    options.frameBufferCount = 8;
+    {
+        sensel::Morph morph(options);
+    }
+
+    const auto configured = fake_sensel::snapshot();
+    CHECK(configured.frameBufferCounts.size() == 1);
+    if (!configured.frameBufferCounts.empty()) {
+        CHECK(configured.frameBufferCounts.front() == 8);
+    }
+    const auto bufferCall = std::find(configured.callOrder.begin(),
+                                      configured.callOrder.end(),
+                                      fake_sensel::Call::SetBufferControl);
+    const auto allocateCall = std::find(configured.callOrder.begin(),
+                                        configured.callOrder.end(),
+                                        fake_sensel::Call::AllocateFrame);
+    const auto startCall = std::find(configured.callOrder.begin(),
+                                     configured.callOrder.end(),
+                                     fake_sensel::Call::StartScanning);
+    CHECK(bufferCall != configured.callOrder.end());
+    CHECK(allocateCall != configured.callOrder.end());
+    CHECK(startCall != configured.callOrder.end());
+    if (bufferCall != configured.callOrder.end() &&
+        allocateCall != configured.callOrder.end() &&
+        startCall != configured.callOrder.end()) {
+        CHECK(bufferCall < allocateCall);
+        CHECK(bufferCall < startCall);
+    }
+
+    fake_sensel::reset();
+    options.frameBufferCount =
+        static_cast<std::uint8_t>(sensel::maximumFrameBufferCount + 1u);
+    bool rejected = false;
+    try {
+        sensel::Morph invalid(options);
+    } catch (const sensel::Error& error) {
+        rejected = error.operation() == sensel::Operation::SetBufferControl &&
+                   error.nativeStatus() == SENSEL_ERROR;
+    }
+    CHECK(rejected);
+    CHECK(fake_sensel::callCount(fake_sensel::Call::OpenAuto) == 0);
 }
 
 void testFrameBatchesAndStatuses() {
@@ -282,6 +335,7 @@ int main() {
     testOwnershipAndInformation();
     testMoveAssignmentCleansBothOwners();
     testSetupFailuresAreTransactional();
+    testFrameBufferConfigurationIsBoundedAndOrdered();
     testFrameBatchesAndStatuses();
     testReadErrorsDoNotPublishPartialBatches();
     testShutdownAfterDeviceError();

@@ -21,6 +21,7 @@ enum class Call : std::size_t {
     GetLedRegisterSize,
     SetContactMask,
     SetFrameContent,
+    SetBufferControl,
     AllocateFrame,
     StartScanning,
     ReadSensor,
@@ -40,7 +41,9 @@ struct TestFrame {
 
 struct Snapshot {
     std::array<int, static_cast<std::size_t>(Call::Count)> calls{};
+    std::vector<Call> callOrder;
     std::string openedPath;
+    std::vector<unsigned char> frameBufferCounts;
     std::vector<std::vector<unsigned char>> ledWrites;
 };
 

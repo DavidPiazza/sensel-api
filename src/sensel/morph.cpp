@@ -55,6 +55,7 @@ const char* operationName(Operation operation) noexcept {
     case Operation::GetLedRegisterSize: return "read Sensel LED register size";
     case Operation::SetContactMask: return "set Sensel contact mask";
     case Operation::SetFrameContent: return "set Sensel frame content";
+    case Operation::SetBufferControl: return "set Sensel frame buffer count";
     case Operation::AllocateFrame: return "allocate Sensel frame";
     case Operation::StartScanning: return "start Sensel scanning";
     case Operation::ReadSensor: return "read Sensel sensor";
@@ -92,6 +93,11 @@ public:
             throw Error(Operation::RecoverPort,
                         SENSEL_ERROR,
                         "recoverStaleStream requires an explicit devicePath");
+        }
+        if (options.frameBufferCount > maximumFrameBufferCount) {
+            throw Error(Operation::SetBufferControl,
+                        SENSEL_ERROR,
+                        "frameBufferCount must be between 0 and 50");
         }
 
         auto openDevice = [&]() {
@@ -133,6 +139,10 @@ public:
         require(senselSetContactsMask(handle_, CONTACT_MASK_ELLIPSE), Operation::SetContactMask);
         require(senselSetFrameContent(handle_, FRAME_CONTENT_CONTACTS_MASK),
                 Operation::SetFrameContent);
+        // Buffer control persists on the device. Apply zero as deliberately as
+        // a non-zero value so behavior never depends on a previous process.
+        require(senselSetBufferControl(handle_, options.frameBufferCount),
+                Operation::SetBufferControl);
         require(senselAllocateFrameData(handle_, &frame_), Operation::AllocateFrame);
         require(senselStartScanning(handle_), Operation::StartScanning);
         scanning_ = true;
